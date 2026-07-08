@@ -1,0 +1,190 @@
+<html>
+<head>
+  <meta charset="UTF-8"/>
+  <title>Image Board</title>
+  <!-- GunDB & SEA (Security, Encryption, Authorization) -->
+  <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/gun/sea.js"></script>
+  <style type="text/css">
+    /* Minimal CSS to ensure modern browsers don't break the 90s table layout */
+    body { font-family: "MS PGothic", "IPAMonaPGothic", "Mona", "sans-serif"; }
+    blockquote { margin: 1em 3em; }
+  </style>
+</head>
+<body bgcolor="#FFFFEE" text="#800000" link="#0000EE" vlink="#0000EE">
+  
+  <p align=right>[<a href="./" target="_top">Home</a>][<a href="futaba.php?mode=admin">Admin</a>]</p>
+  <p align=center><font color="#800000" size=5><b><span>Image Board</span></b></font></p>
+  <hr width="90%" size=1>
+  
+  <center>
+    <!-- We removed the PHP action and added an onsubmit handler -->
+    <form id="postForm" onsubmit="submitThread(event)">
+      <table cellpadding=1 cellspacing=1>
+        <tr>
+          <td bgcolor=#eeaa88><b>Name</b></td>
+          <td><input type=text id=name size="28" placeholder="Anonymous"></td>
+        </tr>
+        <tr>
+          <td bgcolor=#eeaa88><b>E-mail</b></td>
+          <td><input type=text id=email size="28"></td>
+        </tr>
+        <tr>
+          <td bgcolor=#eeaa88><b>Subject</b></td>
+          <td>
+            <input type=text id=sub size="35">
+            <input type=submit value="Submit">
+          </td>
+        </tr>
+        <tr>
+          <td bgcolor=#eeaa88><b>Comment</b></td>
+          <td><textarea id=com cols="48" rows="4" wrap=soft required></textarea></td>
+        </tr>
+        <tr>
+          <td bgcolor=#eeaa88><b>File</b></td>
+          <td>
+            <input type=file id=upfile size="35" disabled>
+            [<label><input type=checkbox id=textonly value=on checked>No Image</label>]
+          </td>
+        </tr>
+        <tr>
+          <td bgcolor=#eeaa88><b>Password</b></td>
+          <td>
+            <input type=password id=pwd size=8 maxlength=8 value="">
+            <small>(For post deletion. 8 chars max)</small>
+          </td>
+        </tr>
+        <tr>
+          <td colspan=2>
+            <small>
+              <li>Supported files: GIF, JPG, PNG.</li>
+              <li>Max file size is 500 KB.</li>
+              <li>Images greater than 250x250 pixels will be thumbnailed.</li>
+            </small>
+          </td>
+        </tr>
+      </table>
+    </form>
+  </center>
+  
+  <hr>
+
+  <!-- This is where GunDB will inject the posts -->
+  <form id="boardForm">
+    <div id="board"></div>
+  </form>
+
+  <table align=right>
+    <tr>
+      <td nowrap align=center>
+        <input type=hidden name=mode value=usrdel>【Delete Post】[<input type=checkbox name=onlyimgdel value=on>Image Only]<br>
+        Password <input type=password name=pwd size=8 maxlength=8 value=""><input type=button value="Delete" onclick="alert('Local deletion logic would go here.')">
+      </td>
+    </tr>
+  </table>
+  
+  <table align=left border=1>
+    <tr><td>First Page</td><td>[<b>0</b>] </td><td>Last Page</td></tr>
+  </table>
+  
+  <br clear=all>
+  <center><small>- <a href="http://php.s3.to" target=_top>GazouBBS</a> + <a href="http://www.2chan.net/" target=_top>futaba</a> -</small></center>
+
+  <script>
+    // Initialize Gun with a public relay peer
+    const gun = Gun(['https://gun-manhattan.herokuapp.com/gun']);
+    const board = gun.get('futaba_gundb_board_v1');
+
+    // Utility: Format timestamp to Futaba style: YY/MM/DD(Day)HH:MM
+    function formatDate(ms) {
+      const d = new Date(ms);
+      const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+      const pad = (n) => n.toString().padStart(2, '0');
+      
+      const yy = d.getFullYear().toString().slice(-2);
+      const mm = pad(d.getMonth() + 1);
+      const dd = pad(d.getDate());
+      const day = days[d.getDay()];
+      const hh = pad(d.getHours());
+      const min = pad(d.getMinutes());
+      
+      return `${yy}/${mm}/${dd}(${day})${hh}:${min}`;
+    }
+
+    // --- WRITE LOGIC ---
+    async function submitThread(event) {
+      event.preventDefault(); // Stop page reload
+
+      const nameInput = document.getElementById('name').value.trim() || 'Anonymous';
+      const subInput = document.getElementById('sub').value.trim();
+      const comInput = document.getElementById('com').value.trim();
+      
+      if (!comInput) return;
+
+      // Generate anonymous cryptographic keypair for this post
+      const ephemeralKey = await SEA.pair();
+
+      // Create a sequential-looking ID from timestamp
+      const numericId = Math.floor(Date.now() / 1000).toString().slice(-6);
+      
+      const postData = {
+        id_num: numericId,
+        name: nameInput,
+        subject: subInput,
+        comment: comInput,
+        timestamp: Date.now(),
+        pub: ephemeralKey.pub
+      };
+
+      // Sign and broadcast
+      const signedData = await SEA.sign(postData, ephemeralKey);
+      const postNodeId = 'post_' + numericId + '_' + Gun.text.random(4);
+      
+      gun.get(postNodeId).put(signedData);
+      board.set(gun.get(postNodeId));
+
+      // Clear the text area, leave the name/subject
+      document.getElementById('com').value = '';
+    }
+
+    // --- READ LOGIC ---
+    function listenToBoard() {
+      const boardDiv = document.getElementById('board');
+      
+      board.map().on(async (rawSignedData, id) => {
+        if (!rawSignedData) return;
+
+        const post = await SEA.verify(rawSignedData);
+        if (!post) return; 
+        
+        // Prevent duplicates in the DOM
+        if (document.getElementById(id)) return;
+
+        // Create the Futaba-styled post wrapper
+        const postWrapper = document.createElement('div');
+        postWrapper.id = id;
+        
+        // Build the exact Futaba HTML layout
+        postWrapper.innerHTML = `
+          <input type=checkbox name="${post.id_num}" value=delete>
+          <font color="#cc1105" size="+1"><b>${post.subject || ''}</b></font> 
+          Name <font color="#117743"><b>${post.name}</b></font> 
+          ${formatDate(post.timestamp)} 
+          No.${post.id_num} &nbsp; 
+          [<a href="javascript:void(0);">Reply</a>]
+          <blockquote>${post.comment.replace(/\n/g, '<br>')}</blockquote>
+          <br clear=left>
+          <hr>
+        `;
+
+        // Futaba displays newest at top, or append if chronological
+        // We'll prepend to simulate an active catalog view
+        boardDiv.insertBefore(postWrapper, boardDiv.firstChild);
+      });
+    }
+
+    // Start listening on load
+    listenToBoard();
+  </script>
+</body>
+</html>
