@@ -2,7 +2,7 @@
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <meta charset="UTF-8"/>
-  <title>10chan</title>
+  <title>6chan</title>
   
   <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/gun/sea.js"></script>
@@ -20,7 +20,7 @@
     </tr>
   </table>
   
-  <p align=center><font color="#800000" size=5><b><span id="board-title">10chan</span></b></font></p>
+  <p align=center><font color="#800000" size=5><b><span id="board-title">6Chan</span></b></font></p>
   <hr width="90%" size=1>
   
   <center>
@@ -114,7 +114,7 @@
       localStorage: true 
     });
     
-    const board = gun.get('10chan_gunDB' + boardCode); 
+    const board = gun.get('6Chan_gunDB' + boardCode); 
 
     function formatDate(ms) {
       const d = new Date(ms);
@@ -199,7 +199,7 @@
           // 2 second timeout so the browser doesn't freeze if network is bad
           setTimeout(() => { if (!resolved) { resolved = true; resolve(false); } }, 2000);
           
-          gun.get('10chan_gunDB_r9k_hashes').get(textHash).once((data) => {
+          gun.get('6Chan_gunDB_r9k_hashes').get(textHash).once((data) => {
             if (!resolved) {
               resolved = true;
               resolve(!!data);
@@ -213,7 +213,7 @@
         }
         
         // Record the fingerprint so it can never be used again
-        gun.get('10chan_gunDB_r9k_hashes').get(textHash).put(true);
+        gun.get('6Chan_gunDB_r9k_hashes').get(textHash).put(true);
       }
       // ---------------------------------------------
 
