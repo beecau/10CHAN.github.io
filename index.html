@@ -7,7 +7,7 @@
   <script src="https://cdn.jsdelivr.net/npm/gun/sea.js"></script>
   
   <style type="text/css">
-    /* FORCE 90s AESTHETIC - Overriding modern browser defaults */
+    /* FORCE 90s AESTHETIC */
     body, td, th {
       font-family: "MS PGothic", "IPAMonaPGothic", "Mona", "sans-serif";
       font-size: 10pt;
@@ -18,7 +18,6 @@
     a { text-decoration: none; }
     a:hover { color: #DD0000; }
     
-    /* Hard, flat borders for inputs */
     input[type=text], input[type=password], textarea, input[type=file] {
       border: 1px solid #7F9DB9;
       background-color: #FFFFFF;
@@ -27,7 +26,7 @@
       padding: 2px;
     }
     input[type=submit], input[type=button] {
-      background-color: #D4D0C8; /* Classic Windows 98 gray */
+      background-color: #D4D0C8; 
       border: 2px outset #FFFFFF;
       font-family: "MS PGothic", "sans-serif";
       font-size: 10pt;
@@ -37,7 +36,6 @@
       border: 2px inset #FFFFFF;
     }
     
-    /* Classic Blockquote styling for Futaba */
     blockquote {
       margin-top: 1em;
       margin-bottom: 1em;
@@ -45,7 +43,6 @@
       margin-right: 3em;
     }
     
-    /* Utility */
     .post-container { margin-bottom: 8px; }
   </style>
 </head>
@@ -138,11 +135,13 @@
   <center><small>- <a href="#" target=_top>GazouBBS</a> + <a href="#" target=_top>futaba</a> + GunDB -</small></center>
 
   <script>
-    // Initialize Gun with a working public relay for instant P2P Sync
-    const gun = Gun(['https://gun-rs.iris.to/gun']);
+    // 1. INITIALIZE GUN WITH STRICT LOCAL CACHING
+    const gun = Gun({
+      peers: ['https://gun-rs.iris.to/gun'],
+      localStorage: true 
+    });
     const board = gun.get('futaba_gundb_board_v3'); 
 
-    // Utility: Format timestamp (YY/MM/DD(Day)HH:MM)
     function formatDate(ms) {
       const d = new Date(ms);
       const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -158,6 +157,56 @@
       return `${yy}/${mm}/${dd}(${day})${hh}:${min}`;
     }
 
+    // --- BIT-PACKING COMPRESSION ENGINE ---
+    // Takes standard string, returns a 50% smaller string packed with weird 16-bit characters
+    function compressDraft(text) {
+      if (!text) return '';
+      let compressed = '';
+      for (let i = 0; i < text.length; i += 2) {
+        // Grab two 8-bit characters. If string is odd length, pad the end with a null byte (0)
+        let byteA = text.charCodeAt(i) & 255;
+        let byteB = (i + 1 < text.length) ? (text.charCodeAt(i + 1) & 255) : 0;
+        
+        // Shift byteA into the high 8 bits, OR it with byteB in the low 8 bits
+        let packed16Bit = (byteA << 8) | byteB;
+        compressed += String.fromCharCode(packed16Bit);
+      }
+      return compressed;
+    }
+
+    // Takes packed string, rips it back into two standard characters
+    function decompressDraft(compressedText) {
+      if (!compressedText) return '';
+      let decompressed = '';
+      for (let i = 0; i < compressedText.length; i++) {
+        let code = compressedText.charCodeAt(i);
+        
+        let byteA = code >> 8;           // Extract high 8 bits
+        let byteB = code & 255;          // Extract low 8 bits
+        
+        decompressed += String.fromCharCode(byteA);
+        if (byteB !== 0) { // Don't append our padding null byte
+          decompressed += String.fromCharCode(byteB);
+        }
+      }
+      return decompressed;
+    }
+
+    // --- DRAFT PROTECTION LOGIC ---
+    window.addEventListener('DOMContentLoaded', () => {
+      const packedDraft = localStorage.getItem('futaba_draft_packed');
+      if (packedDraft) {
+        // Unpack the weird Unicode string back to normal text
+        document.getElementById('com').value = decompressDraft(packedDraft);
+      }
+    });
+
+    document.getElementById('com').addEventListener('input', (event) => {
+      // Pack the current text before saving to storage
+      const packedText = compressDraft(event.target.value);
+      localStorage.setItem('futaba_draft_packed', packedText);
+    });
+
     // --- WRITE LOGIC ---
     async function submitThread(event) {
       event.preventDefault();
@@ -169,7 +218,6 @@
       
       if (!comInput) return;
 
-      // Convert image to Base64
       let imageData = null;
       if (fileInput.files.length > 0) {
         const file = fileInput.files[0];
@@ -210,11 +258,13 @@
       gun.get(postNodeId).put(nodePayload);
       board.set(gun.get(postNodeId));
 
+      // Clear form and wipe the compressed local draft
       document.getElementById('com').value = '';
       document.getElementById('upfile').value = '';
+      localStorage.removeItem('futaba_draft_packed');
     }
 
-    // --- READ LOGIC ---
+    // --- READ LOGIC (LIVE UPDATING) ---
     function listenToBoard() {
       const boardDiv = document.getElementById('board');
       
@@ -223,13 +273,13 @@
 
         const post = await SEA.verify(nodeData.message, nodeData.pubKey);
         if (!post) return; 
+        
         if (document.getElementById(id)) return;
 
         const postWrapper = document.createElement('div');
         postWrapper.id = id;
         postWrapper.className = 'post-container';
         
-        // Classic image thumbnail logic
         let imageHtml = '';
         if (post.image) {
           imageHtml = `
