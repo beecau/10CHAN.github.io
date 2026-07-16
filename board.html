@@ -99,9 +99,13 @@
   <center><small>- <a href="#" target=_top>GazouBBS</a> + <a href="#" target=_top>futaba</a> + GunDB -</small></center>
 
   <script>
-    // --- ADDED URL CHECKING LOGIC HERE ---
     const urlParams = new URLSearchParams(window.location.search);
-    const boardCode = Array.from(urlParams.keys())[0] || 'b'; // Defaults to 'b'
+    const rawCode = Array.from(urlParams.keys())[0]; 
+    
+    // --- ADDED SUPERSECRETPAGE TO ALLOWLIST ---
+    const allowedBoards = ['b', 'r9k', 'int', 'v', 'emu', 'pc', 'cgi', 'mp3', 'dgi', 'a', 'lit', 'diy', '10', 'SUPERSECRETPAGE'];
+    
+    const boardCode = allowedBoards.includes(rawCode) ? rawCode : 'b'; 
     document.getElementById('board-title').innerText = "/" + boardCode + "/";
 
     // 1. INITIALIZE GUN WITH STRICT LOCAL CACHING
@@ -110,7 +114,6 @@
       localStorage: true 
     });
     
-    // Append the board code dynamically to the stream name
     const board = gun.get('10chan_gunDB' + boardCode); 
 
     function formatDate(ms) {
@@ -129,34 +132,27 @@
     }
 
     // --- BIT-PACKING COMPRESSION ENGINE ---
-    // Takes standard string, returns a 50% smaller string packed with weird 16-bit characters
     function compressDraft(text) {
       if (!text) return '';
       let compressed = '';
       for (let i = 0; i < text.length; i += 2) {
-        // Grab two 8-bit characters. If string is odd length, pad the end with a null byte (0)
         let byteA = text.charCodeAt(i) & 255;
         let byteB = (i + 1 < text.length) ? (text.charCodeAt(i + 1) & 255) : 0;
-        
-        // Shift byteA into the high 8 bits, OR it with byteB in the low 8 bits
         let packed16Bit = (byteA << 8) | byteB;
         compressed += String.fromCharCode(packed16Bit);
       }
       return compressed;
     }
 
-    // Takes packed string, rips it back into two standard characters
     function decompressDraft(compressedText) {
       if (!compressedText) return '';
       let decompressed = '';
       for (let i = 0; i < compressedText.length; i++) {
         let code = compressedText.charCodeAt(i);
-        
-        let byteA = code >> 8;           // Extract high 8 bits
-        let byteB = code & 255;          // Extract low 8 bits
-        
+        let byteA = code >> 8;           
+        let byteB = code & 255;          
         decompressed += String.fromCharCode(byteA);
-        if (byteB !== 0) { // Don't append our padding null byte
+        if (byteB !== 0) { 
           decompressed += String.fromCharCode(byteB);
         }
       }
@@ -167,13 +163,11 @@
     window.addEventListener('DOMContentLoaded', () => {
       const packedDraft = localStorage.getItem('futaba_draft_packed');
       if (packedDraft) {
-        // Unpack the weird Unicode string back to normal text
         document.getElementById('com').value = decompressDraft(packedDraft);
       }
     });
 
     document.getElementById('com').addEventListener('input', (event) => {
-      // Pack the current text before saving to storage
       const packedText = compressDraft(event.target.value);
       localStorage.setItem('futaba_draft_packed', packedText);
     });
@@ -188,6 +182,40 @@
       const fileInput = document.getElementById('upfile');
       
       if (!comInput) return;
+
+      // --- NEW ROBOT 9000 (r9k) UNIQUENESS CHECK ---
+      if (boardCode === 'r9k') {
+        // Strip spaces and force lowercase to prevent basic bypasses
+        const normalizedText = comInput.toLowerCase().replace(/\s+/g, '');
+        
+        // Generate SHA-256 fingerprint
+        const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalizedText));
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        const textHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        
+        // Check GunDB index for this fingerprint
+        const isDuplicate = await new Promise((resolve) => {
+          let resolved = false;
+          // 2 second timeout so the browser doesn't freeze if network is bad
+          setTimeout(() => { if (!resolved) { resolved = true; resolve(false); } }, 2000);
+          
+          gun.get('10chan_gunDB_r9k_hashes').get(textHash).once((data) => {
+            if (!resolved) {
+              resolved = true;
+              resolve(!!data);
+            }
+          });
+        });
+
+        if (isDuplicate) {
+          alert("ROBOT9000 ERROR: This text has already been posted to the network. Be original!");
+          return; // Kill the submission entirely
+        }
+        
+        // Record the fingerprint so it can never be used again
+        gun.get('10chan_gunDB_r9k_hashes').get(textHash).put(true);
+      }
+      // ---------------------------------------------
 
       let imageData = null;
       if (fileInput.files.length > 0) {
@@ -229,7 +257,6 @@
       gun.get(postNodeId).put(nodePayload);
       board.set(gun.get(postNodeId));
 
-      // Clear form and wipe the compressed local draft
       document.getElementById('com').value = '';
       document.getElementById('upfile').value = '';
       localStorage.removeItem('futaba_draft_packed');
