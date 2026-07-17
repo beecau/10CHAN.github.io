@@ -32,7 +32,7 @@
       <table cellpadding=1 cellspacing=1>
         <tr>
           <td bgcolor=#eeaa88><b>Name</b></td>
-          <td><input type=text id=name size="28" value=""></td>
+          <td><input type=text id=name size="28" value="" placeholder="Name#tripcode"></td>
         </tr>
         <tr>
           <td bgcolor=#eeaa88><b>E-mail</b></td>
@@ -106,20 +106,19 @@
     const urlParams = new URLSearchParams(window.location.search);
     const rawCode = Array.from(urlParams.keys())[0]; 
     
-    // --- ADDED SUPERSECRETPAGE TO ALLOWLIST ---
+    // --- ALLOWLIST ---
     const allowedBoards = ['b', 'r9k', 'int', 'v', 'emu', 'pc', 'cgi', 'mp3', 'dgi', 'a', 'lit', 'diy', '10', 'SUPERSECRETPAGE'];
-    
     const boardCode = allowedBoards.includes(rawCode) ? rawCode : 'b'; 
     document.getElementById('board-title').innerText = "/" + boardCode + "/";
 
-    // 1. INITIALIZE GUN WITH STRICT LOCAL CACHING
+    // --- GUN INITIALIZATION ---
     const gun = Gun({
       peers: ['https://gun-rs.iris.to/gun'],
       localStorage: true 
     });
-    
     const board = gun.get('65chan_gunDB' + boardCode); 
 
+    // --- UTILITIES ---
     function formatDate(ms) {
       const d = new Date(ms);
       const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -135,7 +134,36 @@
       return `${yy}/${mm}/${dd}(${day})${hh}:${min}`;
     }
 
-    // --- BIT-PACKING COMPRESSION ENGINE ---
+    function addReply(idNum) {
+      const comBox = document.getElementById('com');
+      comBox.value += `>>${idNum}\n`;
+      comBox.focus();
+    }
+
+    // --- TEXT FORMATTING (Greentext & Replies) ---
+    function formatComment(text) {
+      if (!text) return '';
+      // Escape HTML to prevent XSS
+      let escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      let lines = escaped.split('\n');
+      
+      for (let i = 0; i < lines.length; i++) {
+        let line = lines[i];
+        
+        // Format Replies: >>123456
+        line = line.replace(/&gt;&gt;(\d{6})/g, '<a href="#post_$1" style="color: #d00;">&gt;&gt;$1</a>');
+        
+        // Format Greentext: Starts with > but is not a reply link
+        if (line.trim().startsWith('&gt;') && !line.trim().match(/^<a href/)) {
+          line = `<span style="color: #789922;">${line}</span>`;
+        }
+        
+        lines[i] = line;
+      }
+      return lines.join('<br>');
+    }
+
+    // --- COMPRESSION ENGINE ---
     function compressDraft(text) {
       if (!text) return '';
       let compressed = '';
@@ -180,7 +208,7 @@
     async function submitThread(event) {
       event.preventDefault();
 
-      const nameInput = document.getElementById('name').value.trim() || 'Anonymous';
+      let rawNameInput = document.getElementById('name').value.trim() || 'Anonymous';
       const subInput = document.getElementById('sub').value.trim();
       const comInput = document.getElementById('com').value.trim();
       const fileInput = document.getElementById('upfile');
@@ -189,27 +217,36 @@
       
       if (!comInput) return;
 
-      // Hash the password so it's not sitting in plaintext on the P2P network
+      // --- TRIPCODE GENERATOR ---
+      let parsedName = rawNameInput;
+      let tripcode = '';
+      if (rawNameInput.includes('#')) {
+        const parts = rawNameInput.split('#');
+        parsedName = parts[0] || 'Anonymous';
+        const tripPass = parts.slice(1).join('#'); // Everything after the first #
+        
+        // Hash the tripcode password
+        const tripBuffer = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(tripPass));
+        const tripArray = Array.from(new Uint8Array(tripBuffer));
+        tripcode = '!' + btoa(String.fromCharCode.apply(null, tripArray)).substring(0, 10);
+      }
+
+      // Hash the deletion password
       let pwdHash = null;
       if (pwdInput) {
         const pwdBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pwdInput));
         pwdHash = Array.from(new Uint8Array(pwdBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
       }
 
-      // --- NEW ROBOT 9000 (r9k) UNIQUENESS CHECK ---
+      // --- R9K LOGIC ---
       if (boardCode === 'r9k') {
-        // Strip spaces and force lowercase to prevent basic bypasses
         const normalizedText = comInput.toLowerCase().replace(/\s+/g, '');
-        
-        // Generate SHA-256 fingerprint
         const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalizedText));
         const hashArray = Array.from(new Uint8Array(hashBuffer));
         const textHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
         
-        // Check GunDB index for this fingerprint
         const isDuplicate = await new Promise((resolve) => {
           let resolved = false;
-          // 2 second timeout so the browser doesn't freeze if network is bad
           setTimeout(() => { if (!resolved) { resolved = true; resolve(false); } }, 2000);
           
           gun.get('65chan_gunDB_r9k_hashes').get(textHash).once((data) => {
@@ -222,23 +259,18 @@
 
         if (isDuplicate) {
           alert("ROBOT9000 ERROR: This text has already been posted to the network. Be original!");
-          return; // Kill the submission entirely
+          return; 
         }
-        
-        // Record the fingerprint so it can never be used again
         gun.get('65chan_gunDB_r9k_hashes').get(textHash).put(true);
       }
-      // ---------------------------------------------
 
       let imageData = null;
       if (!textOnly && fileInput.files.length > 0) {
         const file = fileInput.files[0];
-        
         if (file.size > 500000) {
-          alert("File too large! Keep it under 500 KB to save network bandwidth.");
+          alert("File too large! Keep it under 500 KB.");
           return;
         }
-
         imageData = await new Promise((resolve) => {
           const reader = new FileReader();
           reader.onload = (e) => resolve(e.target.result);
@@ -253,7 +285,8 @@
       
       const postData = {
         id_num: numericId,
-        name: nameInput,
+        name: parsedName,
+        tripcode: tripcode,
         subject: subInput,
         comment: comInput,
         image: imageData, 
@@ -288,7 +321,6 @@
         return;
       }
 
-      // Hash the entered password to compare it
       const pwdBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(delPwd));
       const inputHash = Array.from(new Uint8Array(pwdBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 
@@ -298,12 +330,10 @@
         
         if (inputHash === postHash) {
           if (onlyImgDel) {
-             // Wipe the image visually, though true SEA deletion requires keys
              const imgElement = document.getElementById(nodeId).querySelector('img');
              if(imgElement) imgElement.style.display = 'none';
-             alert("Image hidden locally. (P2P signature prevents modifying image without keys)");
+             alert("Image hidden locally.");
           } else {
-             // Tombstone the entire post in GunDB
              gun.get(nodeId).put(null);
              document.getElementById(nodeId).style.display = 'none';
           }
@@ -323,10 +353,14 @@
         const post = await SEA.verify(nodeData.message, nodeData.pubKey);
         if (!post) return; 
         
-        if (document.getElementById(id)) return;
+        // --- BUMP LOGIC ---
+        // If the post already exists in DOM, skip recreation
+        if (document.getElementById('post_' + post.id_num)) {
+          return;
+        }
 
         const postWrapper = document.createElement('div');
-        postWrapper.id = id;
+        postWrapper.id = 'post_' + post.id_num; // Proper ID for anchor linking
         postWrapper.className = 'post-container';
         
         let imageHtml = '';
@@ -339,22 +373,38 @@
           `;
         }
         
+        const tripHtml = post.tripcode ? `<span style="color: #117743;"><b>${post.tripcode}</b></span>` : '';
+
         postWrapper.innerHTML = `
           <input type=checkbox class="delete-checkbox" data-nodeid="${post.node_id}" data-pwdhash="${post.pwd_hash}">
           <font color="#cc1105" size="+1"><b>${post.subject || ''}</b></font> 
-          Name <font color="#117743"><b>${post.name}</b></font> 
+          Name <font color="#117743"><b>${post.name}</b></font> ${tripHtml} 
           ${formatDate(post.timestamp)} 
           No.${post.id_num} &nbsp; 
-          [<a href="javascript:void(0);">Reply</a>]
+          [<a href="javascript:void(0);" onclick="addReply('${post.id_num}')">Reply</a>]
           ${imageHtml}
           <blockquote>
-            ${post.comment.replace(/\n/g, '<br>')}
+            ${formatComment(post.comment)}
           </blockquote>
           <br clear=left>
           <hr>
         `;
 
+        // Insert new post at the top
         boardDiv.insertBefore(postWrapper, boardDiv.firstChild);
+
+        // Visual Bumping: if this post replies to older posts, bump the referenced posts to the top
+        const replyMatches = post.comment.match(/>>(\d{6})/g);
+        if (replyMatches) {
+          replyMatches.forEach(match => {
+            const targetId = 'post_' + match.replace('>>', '');
+            const targetEl = document.getElementById(targetId);
+            // Move the referenced thread back up directly under the new reply
+            if (targetEl && targetEl !== postWrapper) {
+              boardDiv.insertBefore(targetEl, boardDiv.firstChild);
+            }
+          });
+        }
       });
     }
 
